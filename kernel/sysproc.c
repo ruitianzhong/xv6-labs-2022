@@ -92,3 +92,59 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigreturn()
+{
+  struct proc *p = myproc();
+  intr_off();
+  // if (p->alarm == 0)
+  // {
+  //   intr_on();
+  //   return -1;
+  // }
+  p->alarm = 0;
+  restore_alarmcontext(p);
+  intr_on();
+  return p->trapframe->a0;
+}
+
+uint64
+sys_sigalarm()
+{
+  void (*handler)(void);
+  int interval;
+  argint(0, &interval);
+  argaddr(1, (uint64 *)&handler);
+  struct proc *p = myproc();
+  intr_off();
+
+  if (interval == 0)
+  {
+    p->interval = 0;
+    p->elapse = 0;
+    p->handler = 0;
+    p->alarm = 0;
+    intr_on();
+    return 0;
+  }
+  if (p->alarm == 1)
+  {
+    intr_on();
+    return -1;
+  }
+  pte_t *pte = walk(p->pagetable, (uint64)handler, 0);
+  if (*pte & PTE_V && *pte & PTE_X && *pte & PTE_U && interval > 0)
+  {
+    p->interval = interval;
+    p->elapse = interval;
+    p->handler = handler;
+    intr_on();
+    return 0;
+  }
+  else
+  {
+    intr_on();
+    return -1;
+  }
+}

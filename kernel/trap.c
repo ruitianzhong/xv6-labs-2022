@@ -13,6 +13,8 @@ extern char trampoline[], uservec[], userret[];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
+// save caller register to p->alarmcontext
+void save_alarmcontext(struct proc*);
 
 extern int devintr();
 
@@ -67,6 +69,20 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    if (which_dev == 2)
+    {
+      if (p->interval != 0)
+      {
+        p->elapse++;
+      }
+      if (p->interval > 0 && !p->alarm && p->elapse >= p->interval)
+      {
+        p->alarm = 1;
+        p->elapse -= p->interval;
+        save_alarmcontext(p);
+        p->trapframe->epc = (uint64)p->handler;
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -219,3 +235,76 @@ devintr()
   }
 }
 
+void 
+save_alarmcontext(struct proc *p)
+{
+  struct alarmcontext *a = &p->alarmcontext;
+  struct trapframe *t = p->trapframe;
+  a->ra = t->ra;
+  a->sp = t->sp;
+  a->t0 = t->t0;
+  a->t1 = t->t1;
+  a->t2 = t->t2;
+  a->t3 = t->t3;
+  a->t4 = t->t4;
+  a->t5 = t->t5;
+  a->t6 = t->t6;
+  a->a0 = t->a0;
+  a->a1 = t->a1;
+  a->a2 = t->a2;
+  a->a3 = t->a3;
+  a->a4 = t->a4;
+  a->a5 = t->a5;
+  a->a6 = t->a6;
+  a->a7 = t->a7;
+  a->epc = t->epc;
+  a->s0 = t->s0;
+  a->s1 = t->s1;
+  a->s2 = t->s2;
+  a->s3 = t->s3;
+  a->s4 = t->s4;
+  a->s5 = t->s5;
+  a->s6 = t->s6;
+  a->s7 = t->s7;
+  a->s8 = t->s8;
+  a->s9 = t->s9;
+  a->s10 = t->s10;
+  a->s11 = t->s11;
+}
+
+void
+restore_alarmcontext(struct proc *p)
+{
+  struct alarmcontext * a = &p->alarmcontext;
+  struct trapframe *t = p->trapframe;
+  t->ra = a->ra;
+  t->sp = a->sp;
+  t->t0 = a->t0;
+  t->t1 = a->t1;
+  t->t2 = a->t2;
+  t->t3 = a->t3;
+  t->t4 = a->t4;
+  t->t5 = a->t5;
+  t->t6 = a->t6;
+  t->a0 = a->a0;
+  t->a1 = a->a1;
+  t->a2 = a->a2;
+  t->a3 = a->a3;
+  t->a4 = a->a4;
+  t->a5 = a->a5;
+  t->a6 = a->a6;
+  t->a7 = a->a7;
+  t->epc = a->epc;
+  t->s0 = a->s0;
+  t->s1 = a->s1;
+  t->s2 = a->s2;
+  t->s3 = a->s3;
+  t->s4 = a->s4;
+  t->s5 = a->s5;
+  t->s6 = a->s6;
+  t->s7 = a->s7;
+  t->s8 = a->s8;
+  t->s9 = a->s9;
+  t->s10 = a->s10;
+  t->s11 = a->s11;
+}

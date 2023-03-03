@@ -18,6 +18,40 @@ struct context {
   uint64 s11;
 };
 
+struct alarmcontext
+{
+  uint64 ra;
+  uint64 sp;
+  uint64 t0;
+  uint64 t1;
+  uint64 t2;
+  uint64 t3;
+  uint64 t4;
+  uint64 t5;
+  uint64 t6;
+  uint64 a0;
+  uint64 a1;
+  uint64 a2;
+  uint64 a3;
+  uint64 a4;
+  uint64 a5;
+  uint64 a6;
+  uint64 a7;
+  uint64 epc;
+  uint64 s0;
+  uint64 s1;
+  uint64 s2;
+  uint64 s3;
+  uint64 s4;
+  uint64 s5;
+  uint64 s6;
+  uint64 s7;
+  uint64 s8;
+  uint64 s9;
+  uint64 s10;
+  uint64 s11;
+};
+
 // Per-CPU state.
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
@@ -91,6 +125,11 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  int interval;
+  int elapse;
+  void (*handler)(void);
+  int alarm; // 0 not alarm ,1 alarm
+  struct alarmcontext alarmcontext;
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
