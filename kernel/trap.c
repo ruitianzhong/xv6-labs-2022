@@ -67,7 +67,13 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else if (r_scause() == 15 )
+  {
+    handle_pagefault(p,r_stval());
+  }
+  else
+  {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
@@ -217,5 +223,32 @@ devintr()
   } else {
     return 0;
   }
+}
+void handle_pagefault(struct proc *p,uint64 addr)
+{
+  uint64  pa;
+  pte_t *pte;
+  uint flag;
+  char *mem;
+  if(addr>=MAXVA) goto err;
+  if ((pte = walk(p->pagetable, addr, 0)) == 0 || (*pte & PTE_COW) == 0)
+  {
+    goto err;
+  }
+  else
+  {
+    mem = kalloc();
+    if (mem == 0)
+    {
+      goto err;
+    }
+    pa = PTE2PA(*pte);
+    flag = PTE_FLAGS(*pte);
+    modify_pagetable((uint64)mem,pa,flag,pte);
+  }
+  return;
+err:
+  setkilled(p);
+  return;
 }
 

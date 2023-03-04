@@ -10,6 +10,7 @@
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
+int page_refcnt[PHYSTOP / PGSIZE];
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -50,15 +51,22 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run*)pa;
-
+  uint64 pn = (uint64)(pa) / PGSIZE;
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  if (page_refcnt[pn] > 0)
+  {
+    page_refcnt[pn]--;
+  }
+  if (page_refcnt [pn]== 0)
+  {
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+
+    r = (struct run *)pa;
+
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
   release(&kmem.lock);
 }
 
@@ -72,11 +80,35 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if (r)
+  {
     kmem.freelist = r->next;
+    page_refcnt[(uint64)r / PGSIZE] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void 
+page_refcnt_add(uint64 mem){
+  acquire(&kmem.lock);
+  page_refcnt[mem / PGSIZE]++;
+  release(&kmem.lock);
+}
+
+void 
+modify_pagetable(uint64 newpa, uint64 oldpa, uint flags, pte_t *pte)
+{
+  
+  memmove((char *)newpa, (char *)oldpa, PGSIZE);
+  
+  flags = flags & ~PTE_COW;
+  flags |= PTE_W;
+  *pte = PA2PTE(newpa) | flags;
+  kfree((void *)oldpa);
+  // page_refcnt_add(newpa); error here before
+  // resource leak!!!
 }
