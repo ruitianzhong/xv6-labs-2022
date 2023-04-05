@@ -8,18 +8,20 @@
 #include "e1000_dev.h"
 #include "net.h"
 
-#define TX_RING_SIZE 16
+#define TX_RING_SIZE 32
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
 
-#define RX_RING_SIZE 16
+#define RX_RING_SIZE 32
 static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *rx_mbufs[RX_RING_SIZE];
 
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
 
-struct spinlock e1000_lock;
+struct spinlock e1000_lock_tx;
+struct spinlock e1000_lock_rx;
+volatile int count;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -29,7 +31,8 @@ e1000_init(uint32 *xregs)
 {
   int i;
 
-  initlock(&e1000_lock, "e1000");
+  initlock(&e1000_lock_tx, "e1000_lock_tx");
+  initlock(&e1000_lock_rx,"e1000_lock_rx");
 
   regs = xregs;
 
@@ -102,13 +105,58 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock_tx);
+  int tail = regs[E1000_TDT];
+  while (!(tx_ring[tail].status & E1000_TXD_STAT_DD))
+  {
+    // return -1;
+  }
+  if (tx_mbufs[tail] != 0)
+  {
+    mbuffree(tx_mbufs[tail]);
+  }
+  tx_mbufs[tail] = m;
+  tx_ring[tail].addr = (uint64)m->head;
+  tx_ring[tail].length = m->len;
+  tx_ring[tail].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  tx_ring[tail].status = 0; // to allow reuse again
+  tx_ring[tail].cso = 0;    // for future compatibility
+  regs[E1000_TDT] = (tail + 1) % (TX_RING_SIZE);
+  release(&e1000_lock_tx);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
+
+  uint32 tail;
+  int p;
+
+  while (1)
+  {
+    tail = regs[E1000_RDT];
+
+    p = (tail + 1) % RX_RING_SIZE;
+    if (!(rx_ring[p].status & E1000_RXD_STAT_DD))
+    {
+      return;
+    }
+
+    struct mbuf *m = mbufalloc(0);
+    if (m == 0)
+    {
+      panic("e1000_rx : no page");
+    }
+    m->len = rx_ring[p].length;
+    memmove(m->head, (void *)rx_ring[p].addr, rx_ring[p].length);
+    memset((void *)rx_ring[p].addr, 0, rx_ring[p].length);
+    rx_ring[p].status = 0;
+    regs[E1000_RDT] = (tail + 1) % RX_RING_SIZE; // E1000_RDH - > E1000 RDT
+    net_rx(m);
+  }
+
+  return;
   //
   // Your code here.
   //
@@ -123,7 +171,9 @@ e1000_intr(void)
   // tell the e1000 we've seen this interrupt;
   // without this the e1000 won't raise any
   // further interrupts.
+  acquire(&e1000_lock_rx);
   regs[E1000_ICR] = 0xffffffff;
 
   e1000_recv();
+  release(&e1000_lock_rx);
 }
