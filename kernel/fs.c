@@ -25,6 +25,8 @@
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb; 
+#define MAX_INODE_LAYERS 2
+#define LAYERS_MASK(layer) (0xff << (layer * 4)) // layer starts from 0
 
 // Read the super block.
 static void
@@ -416,6 +418,62 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
+  if (bn < NINDIRECT * NINDIRECT)
+  {
+    uint stack[MAX_INODE_LAYERS];
+    int layer, top = -1, flag = 0, alloc = 0;
+    if ((addr = ip->addrs[NDIRECT + 1]) == 0)
+    {
+      addr = balloc(ip->dev);
+      if (addr == 0)
+        return 0;
+      ip->addrs[NDIRECT + 1] = addr;
+      flag = 1;
+    }
+    stack[++top] = addr;
+    for (layer = 0; layer < MAX_INODE_LAYERS; layer++)
+    {
+      bp = bread(ip->dev, addr);
+      a = (uint *)bp->data;
+      addr = a[bn & LAYERS_MASK(layer)];
+      if (addr == 0)
+      {
+        addr = balloc(ip->dev);
+        if (addr == 0)
+        {
+          brelse(bp);
+          goto fail;
+        }
+        a[bn & LAYERS_MASK(layer)] = addr;
+        alloc++;
+        log_write(bp);
+      }
+      if (layer != MAX_INODE_LAYERS)
+        stack[++top] = addr;
+      brelse(bp);
+    }
+    return addr;
+  fail:
+    while (top && alloc)
+    {
+      bp = bread(ip->dev, stack[top - 1]);
+      a = (uint *)bp->data;
+      a[bn & LAYERS_MASK(layer - 1)] = 0;
+      log_write(bp);
+      brelse(bp);
+      bfree(ip->dev, stack[top]);
+      --layer;
+      --alloc;
+      --top;
+    }
+    if (flag == 1)
+    {
+      bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+      ip->addrs[NDIRECT + 1] = 0;
+    }
+    return 0;
+  }
 
   panic("bmap: out of range");
 }
@@ -426,8 +484,8 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp,*up;
+  uint *a,*b;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -448,6 +506,31 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
+  if (ip->addrs[NDIRECT + 1])
+  {
+    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a = (uint *)bp->data;
+    for (i = 0; i < NINDIRECT; i++)
+    {
+      if (a[i])
+      {
+        up = bread(ip->dev, a[i]);
+        b = (uint *)up->data;
+        for (j = 0; j < NINDIRECT; j++)
+        {
+          if (b[j])
+          {
+            bfree(ip->dev, b[j]);
+          }
+        }
+        brelse(up);
+        bfree(ip->dev, a[i]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
+  }
   ip->size = 0;
   iupdate(ip);
 }
