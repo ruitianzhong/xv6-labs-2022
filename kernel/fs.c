@@ -26,7 +26,7 @@
 // only one device
 struct superblock sb; 
 #define MAX_INODE_LAYERS 2
-#define LAYERS_MASK(layer) (0xff << (layer * 4)) // layer starts from 0
+// #define LAYERS_MASK(layer) (0xff << (layer * 4)) // layer starts from 0
 
 // Read the super block.
 static void
@@ -419,6 +419,7 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
   bn -= NINDIRECT;
+  int offset[MAX_INODE_LAYERS] = {bn % NINDIRECT, bn / NINDIRECT};
   if (bn < NINDIRECT * NINDIRECT)
   {
     uint stack[MAX_INODE_LAYERS];
@@ -436,7 +437,7 @@ bmap(struct inode *ip, uint bn)
     {
       bp = bread(ip->dev, addr);
       a = (uint *)bp->data;
-      addr = a[bn & LAYERS_MASK(layer)];
+      addr = a[offset[layer]];
       if (addr == 0)
       {
         addr = balloc(ip->dev);
@@ -445,7 +446,7 @@ bmap(struct inode *ip, uint bn)
           brelse(bp);
           goto fail;
         }
-        a[bn & LAYERS_MASK(layer)] = addr;
+        a[offset[layer]] = addr;
         alloc++;
         log_write(bp);
       }
@@ -459,7 +460,7 @@ bmap(struct inode *ip, uint bn)
     {
       bp = bread(ip->dev, stack[top - 1]);
       a = (uint *)bp->data;
-      a[bn & LAYERS_MASK(layer - 1)] = 0;
+      a[offset[layer - 1]] = 0;
       log_write(bp);
       brelse(bp);
       bfree(ip->dev, stack[top]);
