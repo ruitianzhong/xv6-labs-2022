@@ -301,6 +301,44 @@ create(char *path, short type, short major, short minor)
   return 0;
 }
 
+static struct inode *
+walk_symlink(struct inode * symlink_ip){
+  int count = 0;
+  char path[MAXPATH];
+  struct inode *next = symlink_ip;
+  while (count < MAX_SYMLINK)
+  {
+    readi(next, 0, (uint64)path, 0, MAXPATH);
+    iunlock(next); // to avoid tricky deadlock
+    if (next != symlink_ip)
+    {
+      iput(next);
+    }
+    next = namei(path);
+    if (next == 0)
+    {
+      ilock(symlink_ip);
+      return 0;
+    }
+    ilock(next);
+    if (next->type == T_FILE)
+    {
+      ilock(symlink_ip);
+      return next;
+    }
+    if (next->type == T_DEVICE || next->type == T_DIR)
+    {
+      iunlockput(next);
+      ilock(symlink_ip);
+      return 0;
+    }
+    count++;
+  }
+  iunlockput(next);
+  ilock(symlink_ip);
+  return 0;
+}
+
 uint64
 sys_open(void)
 {
@@ -339,6 +377,26 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  if (!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK)
+  {
+    struct inode *real_ip;
+    if ((real_ip = walk_symlink(ip)) > 0 && real_ip->nlink > 0)
+    {
+       iunlockput(ip);
+      ip = real_ip;
+    }
+    else
+    {
+      iunlockput(ip);
+      if (real_ip)
+        iunlockput(real_ip);
+
+      end_op();
+      return -1;
+    }
+   
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -506,8 +564,32 @@ sys_pipe(void)
 
 uint64
 sys_symlink(void){
-  char target[MAXPATH],path[MAXPATH];
-  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH)<0){
+  char target[MAXPATH], path[MAXPATH];
+  int npath, ntarget;
+  ntarget = argstr(0, target, MAXPATH);
+  npath = argstr(1, path, MAXPATH);
+  if (npath < 0 || ntarget < 0)
+  {
     return -1;
   }
+
+  if (MAXPATH > BSIZE)
+    panic("symlink:MAXPATH >BSIZE");
+
+  struct inode *ip;
+  begin_op();
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0)
+  {
+    end_op();
+    return -1;
+  }
+  if (writei(ip, 0, (uint64)target, 0, strlen(target)) != (strlen(target))) // target insted of path
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip); // forget to put here
+  end_op();
+  return 0;
 }
