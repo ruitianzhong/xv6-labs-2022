@@ -95,11 +95,28 @@ sys_uptime(void)
 uint64
 sys_mmap(void)
 {
-  return 0xffffffffffffffff;
+  uint64 addr;
+  int length, prot, flags, offset, fd;
+  struct file *f;
+  argint(4, &fd);
+  if (fd < 0 || fd > NOFILE || (f = myproc()->ofile[fd]) == 0)
+  {
+    return MAPFAIL;
+  }
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(5, &offset);
+  return mmap(addr, length, prot, flags, f, offset);
 }
 
 uint64
 sys_munmap(void)
 {
-  return -1;
+  uint64 addr;
+  int length;
+  argaddr(0, &addr);
+  argint(1, &length);
+  return munmap(addr, length);
 }

@@ -17,6 +17,16 @@ struct context {
   uint64 s10;
   uint64 s11;
 };
+struct vma_struct{
+  uint64 addr;
+  int length;
+  struct file *file;
+  int prot;
+  int flags;
+  struct spinlock lock;
+  int used;
+  int offset;
+};
 
 // Per-CPU state.
 struct cpu {
@@ -104,4 +114,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma_struct *vma[NVMA];
+  int nvma;
 };

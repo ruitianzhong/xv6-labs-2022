@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -15,6 +19,8 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+
+void handle_load_store_pgfault(uint64,int);
 
 void
 trapinit(void)
@@ -65,7 +71,14 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause()==13){
+    // load page fault
+    handle_load_store_pgfault(p->trapframe->epc, 0);
+  }else if(r_scause()==15){
+    //  store page fault
+    handle_load_store_pgfault(p->trapframe->epc, 1);
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -219,3 +232,62 @@ devintr()
   }
 }
 
+void handle_load_store_pgfault(uint64 epc, int write)
+{
+  struct proc * p = myproc();
+  struct vma_struct ** vma = p->vma;
+  int nvma = p->nvma;
+  int i;
+  for (i = 0; i < nvma; i++)
+  {
+    if (epc >= vma[i]->addr && epc < vma[i]->addr + vma[i]->length)
+    {
+      break;
+    }
+  }
+  if(i==nvma){
+    setkilled(p);
+    return;
+  }
+  if (write && !(vma[i]->prot & PROT_WRITE)){
+    setkilled(p);
+    return;
+  }
+  if(!write && !(vma[i]->prot & PROT_READ)){
+    setkilled(p);
+    return;
+  }
+  
+  int perm = 0;
+  char * pa = kalloc();
+  if (pa == 0)
+  {
+    setkilled(p);
+    return;
+  }
+  perm = PTE_U | PTE_V;
+  if (vma[i]->prot & PROT_WRITE)
+  {
+    perm = perm | PTE_W;
+  }
+  if (vma[i]->prot & PROT_READ){
+    perm = perm | PROT_READ;
+  }
+  if (mappages(p->pagetable, epc, PGSIZE, (uint64)pa, perm) < 0)
+  {
+    kfree(pa);
+    setkilled(p);
+    return;
+  }
+  struct inode *ip = vma[i]->file->ip;
+  ilock(ip);
+  if (vma[i]->length - PGROUNDDOWN(epc) < PGSIZE)
+  {
+    readi(ip, 0, (uint64)pa, vma[i]->offset, vma[i]->length % PGSIZE);
+  }
+  else
+  {
+    readi(ip, 0, (uint64)pa, vma[i]->offset, PGSIZE);
+  }
+  iunlock(ip);
+}
