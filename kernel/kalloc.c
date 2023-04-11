@@ -92,13 +92,13 @@ kalloc(void)
   }
   for (int i = 0; i < NCPU; i++)
   {
-    acquire(&kmem[id].lock);
+    acquire(&kmem[i].lock);
     r = kmem[i].freelist;
     if (r)
     {
       kmem[i].freelist = r->next;
     }
-    release(&kmem[id].lock);
+    release(&kmem[i].lock);
     if (r)
     {
       memset((char *)r, 5, PGSIZE);
