@@ -23,7 +23,7 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
-void free_mmap_page(uint64, uint64, struct inode *, int, int);
+void free_mmap_page(uint64, uint64, struct vma_struct *vp);
 uint64 min(uint64, uint64);
 uint64 max(uint64, uint64);
 
@@ -110,7 +110,7 @@ freevma(struct vma_struct *vp)
   vp->flags = 0;
   vp ->prot = 0;
   vp ->length = 0;
-  vp->used = 1;
+  vp->used = 0; // very stupid resource leak
   vp->offset = 0;
 }
 
@@ -421,15 +421,7 @@ reparent(struct proc *p)
     }
   }
 }
-static void
-free_all_vma_page(struct vma_struct *vp)
-{
-  uint64 start = vp->addr, end = PGROUNDUP(vp->addr + vp->length), a;
-  for (a = start; a < end; a += PGSIZE)
-  {
-    free_mmap_page(start, PGSIZE, vp->file->ip, vp->flags, vp->offset);
-  }
-}
+
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
@@ -452,7 +444,7 @@ exit(int status)
   int nvma = p->nvma;
   for (int i = 0; i < nvma; i++)
   {
-    free_all_vma_page(p->vma[i]);
+    free_mmap_page(p->vma[i]->addr, p->vma[i]->addr + p->vma[i]->length, p->vma[i]);
     freevma(p->vma[i]);
     p->vma[i] = 0;
     p->nvma--;
@@ -785,19 +777,11 @@ insert_vma(uint64 start, uint64 length, struct file *f, int prot, int flags, int
 {
   struct vma_struct **vma = myproc()->vma, *vp;
   int i;
-  if (start + length <= start || start + length > TRAMPOLINE || offset + length < length)
+  if (start + length <= start || start + length > TRAPFRAME || offset + length < length)
   {
     return MAPFAIL;
   }
-  struct inode *ip = f->ip;
-  ilock(ip);
-  if (offset + length > PGROUNDUP(ip->size))
-  {
-    iunlock(ip);
-    return MAPFAIL;
-  }
-  length = min(length, (uint64)(ip->size - offset));
-  iunlock(ip);
+  length = PGROUNDUP(length);
   int nvma = myproc()->nvma;
   if (nvma >= NVMA)
   {
@@ -811,7 +795,7 @@ insert_vma(uint64 start, uint64 length, struct file *f, int prot, int flags, int
     }
     start = PGROUNDUP(vma[i]->addr + vma[i]->length);
   }
-  if (i == nvma || (vp = allocvma()) == 0)
+  if ((vp = allocvma()) == 0)
   {
     return MAPFAIL;
   }
@@ -830,23 +814,47 @@ insert_vma(uint64 start, uint64 length, struct file *f, int prot, int flags, int
   return vp->addr;
 }
 
-void free_mmap_page(uint64 addr, uint64 length, struct inode *ip, int flags, int off)
+void free_mmap_page(uint64 start, uint64 end, struct vma_struct *vp)
 {
   pte_t *pte;
-  uint64 pa;
-  if ((pte = walk(myproc()->pagetable, addr, 0)) == 0)
-    return;
-  pa = PTE2PA(*pte);
-  if ((*pte & PTE_W) && (flags & MAP_SHARED))
+  uint64 pa, a;
+  struct inode * ip = vp->file->ip;
+  ilock(ip);
+  begin_op();
+  for (a = start; a < end; a += PGSIZE)
   {
-    ilock(ip);
-    begin_op();
-    writei(ip, 0, pa, off, length);
-    iunlock(ip);
-    end_op();
+    if ((pte = walk(myproc()->pagetable, a, 0)) == 0)
+      continue;
+    pa = PTE2PA(*pte);
+    if ((*pte & PTE_W) && (vp->flags & MAP_SHARED))
+    {
+      if ((uint64)vp->offset + a - vp->addr == PGROUNDDOWN((uint64)ip->size))
+      {
+        writei(ip, 0, pa, vp->offset + a - vp->addr, ip->size % PGSIZE);
+      }
+      else if ((uint64)vp->offset + a - vp->addr < PGROUNDDOWN((uint64)ip->size))
+      {
+        writei(ip, 0, pa, vp->offset + a - vp->addr, PGSIZE); // order of parameters
+      }
+    }
+    if ((*pte & PTE_W) || (*pte & PTE_R))
+    {
+      kfree((void *)pa);
+    }
+    *pte = 0;
   }
-  *pte = 0;
-  kfree((void *)pa);
+  if (start > vp->addr)
+  {
+    vp->length = start - vp->addr;
+  }
+  else if (end <= vp->addr + vp->length)
+  {
+    vp->offset += (end - start);
+    vp->length -= (end - start);
+    vp->addr = end;
+  } 
+  iunlock(ip);
+  end_op();
   return;
 }
 
@@ -866,7 +874,7 @@ mmap(uint64 addr, uint64 length, int prot, int flags, struct file *f, int offset
 {
   if (length == 0 || f->type != FD_INODE)
     return MAPFAIL;
-  if (!f->writable && (PROT_WRITE & prot))
+  if (!f->writable && (PROT_WRITE & prot) && !(MAP_PRIVATE & flags))
     return MAPFAIL;
   if (!(flags & MAP_PRIVATE) && !(flags & MAP_SHARED))
     return MAPFAIL;
@@ -892,36 +900,14 @@ int munmap(uint64 addr, uint64 length)
   for (i = 0; i < nvma; i++)
   {
     uint64 start = max(addr, vma[i]->addr),
-           end = min(PGROUNDUP(addr + length), PGROUNDUP(vma[i]->addr + vma[i]->length));
-    if(start > vma[i]->addr && end<PGROUNDUP(vma[i]->addr+vma[i]->length)){
+           end = min(PGROUNDUP(addr + length), vma[i]->addr + vma[i]->length);
+    if (start > vma[i]->addr && end < PGROUNDUP(vma[i]->addr + vma[i]->length))
+    {
       return -1;
     }
-    uint64 p;
-    for (p = start; p < end; p += PGSIZE)
-    {
-      // free page
-      if (end - p == PGSIZE)
-      {
-        free_mmap_page(p, vma[i]->length - (p - start),
-                       vma[i]->file->ip, vma[i]->flags, vma[i]->offset);
-      }
-      else
-      {
-        free_mmap_page(p, PGSIZE, vma[i]->file->ip,
-                       vma[i]->flags, vma[i]->offset);
-      }
-    }
-    if (start > vma[i]->addr)
-    {
-      vma[i]->length = start - vma[i]->addr;
-    }
-    else if (end < PGROUNDUP(vma[i]->addr + vma[i]->length))
-    {
-      vma[i]->offset += (end - start);
-      vma[i]->length -= (end - start);
-      vma[i]->addr = end;
-    }
-    if (start == vma[i]->addr && end == PGROUNDUP(vma[i]->addr + vma[i]->length))
+    free_mmap_page(start, end, vma[i]);
+
+    if (vma[i]->length == 0)
     {
       freevma(vma[i]);
       for (int j = i; j < nvma - 1; j++)

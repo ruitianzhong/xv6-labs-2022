@@ -73,10 +73,10 @@ usertrap(void)
     syscall();
   } else if(r_scause()==13){
     // load page fault
-    handle_load_store_pgfault(p->trapframe->epc, 0);
+    handle_load_store_pgfault(r_stval(), 0);
   }else if(r_scause()==15){
     //  store page fault
-    handle_load_store_pgfault(p->trapframe->epc, 1);
+    handle_load_store_pgfault(r_stval(), 1);
   }
   else if((which_dev = devintr()) != 0){
     // ok
@@ -232,7 +232,7 @@ devintr()
   }
 }
 
-void handle_load_store_pgfault(uint64 epc, int write)
+void handle_load_store_pgfault(uint64 stval, int write)
 {
   struct proc * p = myproc();
   struct vma_struct ** vma = p->vma;
@@ -240,12 +240,13 @@ void handle_load_store_pgfault(uint64 epc, int write)
   int i;
   for (i = 0; i < nvma; i++)
   {
-    if (epc >= vma[i]->addr && epc < vma[i]->addr + vma[i]->length)
+    if (stval >= vma[i]->addr && stval < vma[i]->addr + vma[i]->length)
     {
       break;
     }
   }
-  if(i==nvma){
+  if (i == nvma)
+  {
     setkilled(p);
     return;
   }
@@ -270,10 +271,11 @@ void handle_load_store_pgfault(uint64 epc, int write)
   {
     perm = perm | PTE_W;
   }
-  if (vma[i]->prot & PROT_READ){
-    perm = perm | PROT_READ;
+  if (vma[i]->prot & PROT_READ)
+  {
+    perm = perm | PTE_R;
   }
-  if (mappages(p->pagetable, epc, PGSIZE, (uint64)pa, perm) < 0)
+  if (mappages(p->pagetable, stval, PGSIZE, (uint64)pa, perm) < 0)
   {
     kfree(pa);
     setkilled(p);
@@ -281,13 +283,18 @@ void handle_load_store_pgfault(uint64 epc, int write)
   }
   struct inode *ip = vma[i]->file->ip;
   ilock(ip);
-  if (vma[i]->length - PGROUNDDOWN(epc) < PGSIZE)
+  if (vma[i]->offset + PGROUNDDOWN(stval) - vma[i]->addr == PGROUNDDOWN(ip->size))
   {
-    readi(ip, 0, (uint64)pa, vma[i]->offset, vma[i]->length % PGSIZE);
+    readi(ip, 0, (uint64)pa, vma[i]->offset, ip->size % PGSIZE);
+    memset(pa + ip->size % PGSIZE, 0, PGSIZE - ip->size % PGSIZE);
+  }
+  else if (vma[i]->offset + PGROUNDDOWN(stval) - vma[i]->addr < PGROUNDDOWN(ip->size))
+  {
+    readi(ip, 0, (uint64)pa, vma[i]->offset, PGSIZE);
   }
   else
   {
-    readi(ip, 0, (uint64)pa, vma[i]->offset, PGSIZE);
+    memset((void *)pa, 0, PGSIZE);
   }
   iunlock(ip);
 }
