@@ -30,25 +30,30 @@ struct {
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
 } bcache;
+
+struct {
+  struct buf * buf;
+  struct spinlock lock;
+} bentry[NBUCKET];
 
 void
 binit(void)
 {
   struct buf *b;
-
+  int i;
   initlock(&bcache.lock, "bcache");
+  for (i = 0; i < NBUCKET; i++)
+  {
+    initlock(&bentry[i].lock, "bcache");
+    bentry->buf = 0;
+  }
 
   // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+  for (b = bcache.buf; b < bcache.buf + NBUF; b++){
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->next = bentry[b->blockno % NBUCKET].buf;
+    bentry[b->blockno % NBUCKET].buf = b;
   }
 }
 
@@ -58,34 +63,89 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  struct buf *b;
+  struct buf *b, *pre;
+  int slot = blockno % NBUCKET;
+  int i, pos;
+  acquire(&bentry[slot].lock);
+  b = bentry[slot].buf;
+  while (b != 0)
+  {
+    if (b->dev == dev && b->blockno == blockno)
+    {
+      // find if block already in buf
+      // can not find another empty block
+      // if so one block might have multiple copies in buf
+      b->refcnt++;
+      release(&bentry[slot].lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+    b =b->next;
+  }
+  release(&bentry[slot].lock);
 
   acquire(&bcache.lock);
-
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
-  }
-
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
+  for (i = 0; i < NBUF; i++)
+  {
+    pos = bcache.buf[i].blockno % NBUCKET;
+    acquire(&bentry[pos].lock);
+    if (bcache.buf[i].refcnt == 0)
+    {
+      b = bentry[pos].buf;
+      pre = 0;
+      while (b != 0)
+      {
+        if (b == &bcache.buf[i])
+          break;
+        pre = b;
+        b = b->next;
+      }
+      if (b && pre)
+      {
+        pre->next = b->next;
+      }
+      else if (b)
+      {
+        bentry[pos].buf = b->next;
+      }
+      else
+      {
+        panic("unexpected behavior in bget()");
+      }
+      release(&bentry[pos].lock);
+      acquire(&bentry[slot].lock);
+      struct buf *p = bentry[slot].buf;
+      while (p)
+      {
+        if (p->blockno == blockno && p->dev == dev)
+        {
+          p->refcnt++;
+          break;
+        }
+        p = p->next;
+      }
+      b->next = bentry[slot].buf;
+      bentry[slot].buf = b;
+      if (p)
+      {
+        release(&bentry[slot].lock);
+        release(&bcache.lock);
+        acquiresleep(&p->lock);
+        return p;
+      }
       b->blockno = blockno;
+      b->dev = dev;
       b->valid = 0;
       b->refcnt = 1;
+      release(&bentry[slot].lock);
       release(&bcache.lock);
+
       acquiresleep(&b->lock);
       return b;
     }
+    release(&bentry[pos].lock);
   }
-  panic("bget: no buffers");
+  panic("bget: no buffer");
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -121,33 +181,26 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  int slot = b->blockno % NBUCKET;
+  acquire(&bentry[slot].lock);
   b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
-  }
-  
-  release(&bcache.lock);
+  release(&bentry[slot].lock);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int slot = b->blockno % NBUCKET;
+  acquire(&bentry[slot].lock);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bentry[slot].lock);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int slot = b->blockno % NBUCKET;
+  acquire(&bentry[slot].lock);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bentry[slot].lock);
 }
 
 
