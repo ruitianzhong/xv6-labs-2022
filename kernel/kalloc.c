@@ -76,7 +76,8 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
-  struct run *r;
+  struct run *r, temp, *rp;
+  int i, j;
   push_off();
   int id = cpuid();
   acquire(&kmem[id].lock);
@@ -84,26 +85,46 @@ kalloc(void)
   if(r)
     kmem[id].freelist = r->next;
   release(&kmem[id].lock);
-  pop_off();
   if (r)
   {
+    pop_off();
     memset((char *)r, 5, PGSIZE); // fill with junk
     return (void *)r;
   }
-  for (int i = 0; i < NCPU; i++)
+  for (i = 0; i < NCPU; i++)
   {
     acquire(&kmem[i].lock);
-    r = kmem[i].freelist;
-    if (r)
-    {
-      kmem[i].freelist = r->next;
+    temp.next = 0;
+    for (j = 0; j < NFETCH; j++){
+      rp = kmem[i].freelist;
+      if(rp){
+        kmem[i].freelist = rp->next;
+        rp->next = temp.next;
+        temp.next = rp;
+      }else {
+        break;
+      }
     }
     release(&kmem[i].lock);
+    acquire(&kmem[id].lock);
+    if ((rp = temp.next) == 0)
+      continue;
+    while (rp->next)
+    {
+      rp = rp->next;
+    }
+    rp->next = kmem[id].freelist;
+    kmem[id].freelist = temp.next;
+    r = kmem[id].freelist;
+    kmem[id].freelist = r->next;
+    release(&kmem[id].lock);
     if (r)
     {
+      pop_off();
       memset((char *)r, 5, PGSIZE);
       return (void *)r;
     }
   }
+  pop_off();
   return (void *)r;
 }
