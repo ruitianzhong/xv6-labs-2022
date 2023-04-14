@@ -106,9 +106,9 @@ kalloc(void)
       }
     }
     release(&kmem[i].lock);
-    acquire(&kmem[id].lock);
     if ((rp = temp.next) == 0)
       continue;
+      acquire(&kmem[id].lock);
     while (rp->next)
     {
       rp = rp->next;
@@ -118,12 +118,13 @@ kalloc(void)
     r = kmem[id].freelist;
     kmem[id].freelist = r->next;
     release(&kmem[id].lock);
+    pop_off();
     if (r)
     {
-      pop_off();
       memset((char *)r, 5, PGSIZE);
       return (void *)r;
     }
+    panic("kalloc : unexpected behavior");
   }
   pop_off();
   return (void *)r;
