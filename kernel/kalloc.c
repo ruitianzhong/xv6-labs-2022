@@ -106,9 +106,13 @@ kalloc(void)
       }
     }
     release(&kmem[i].lock);
+
     if ((rp = temp.next) == 0)
+    {
       continue;
-      acquire(&kmem[id].lock);
+    }
+
+    acquire(&kmem[id].lock);
     while (rp->next)
     {
       rp = rp->next;
